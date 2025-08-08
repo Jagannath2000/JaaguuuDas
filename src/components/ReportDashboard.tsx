@@ -264,6 +264,7 @@ const ReportDashboard: React.FC = () => {
     }
     return 'light';
   });
+  const hasGreetedOnce = useRef<boolean>(false);
 
   // Apply theme to document root
   useEffect(() => {
@@ -317,19 +318,47 @@ const ReportDashboard: React.FC = () => {
       return;
     }
 
+    try {
+      await initializeAudioContext();
+    } catch {}
+
+    // If currently listening, stop everything (stop action)
     if (listening) {
-      SpeechRecognition.stopListening();
+      try { SpeechRecognition.stopListening(); } catch {}
+      setAwaitingMoreQuestion(false);
+      resetTranscript();
+      // stop any ongoing TTS immediately
+      if (currentAudio && !currentAudio.paused) {
+        try { currentAudio.pause(); } catch {}
+      }
+      setIsTTSPlaying(false);
+      return;
+    }
+
+    // Not listening currently
+    // If TTS is playing, stop it and do not start listening (acts as stop)
+    if (isTTSPlaying) {
+      if (currentAudio && !currentAudio.paused) {
+        try { currentAudio.pause(); } catch {}
+      }
+      setIsTTSPlaying(false);
       setAwaitingMoreQuestion(false);
       resetTranscript();
       return;
     }
 
+    // Start/resume listening (start action). Greet only once per page load.
     try {
-      await initializeAudioContext();
       resetTranscript();
-
-      const greeting = `${getGreeting()}. Hello! I am your AI assistant. How can I help you today?`;
-      await speakAndPauseListening(greeting);
+      if (!hasGreetedOnce.current) {
+        const greeting = `${getGreeting()}. Hello! I am your AI assistant. How can I help you today?`;
+        await speakAndPauseListening(greeting);
+        hasGreetedOnce.current = true;
+      } else {
+        // Start listening directly without greeting
+        SpeechRecognition.startListening({ continuous: true, language: 'en-US', interimResults: true });
+        setAwaitingMoreQuestion(true);
+      }
     } catch (error) {
       console.error("Error with voice setup:", error);
       showToast("Error starting voice assistant");
