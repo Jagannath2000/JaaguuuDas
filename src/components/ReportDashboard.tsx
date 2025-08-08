@@ -20,7 +20,52 @@ import html2canvas from "html2canvas";
 import leafletImage from "leaflet-image";
 import ChartDataLabels from "chartjs-plugin-datalabels";
 
-Chart.register(zoomPlugin, ChartDataLabels);
+// Add leader line plugin to connect slices to external labels
+const pieLeaderLinesPlugin = {
+  id: 'pieLeaderLines',
+  afterDatasetsDraw(chart: any) {
+    const chartType = chart.config.type;
+    if (chartType !== 'pie' && chartType !== 'doughnut') return;
+
+    const ctx = chart.ctx;
+    const meta = chart.getDatasetMeta(0);
+    const dataset = chart.data.datasets[0];
+    if (!meta || !meta.data || !dataset) return;
+
+    ctx.save();
+    meta.data.forEach((arc: any, index: number) => {
+      // Arc geometry
+      const startAngle = arc.startAngle;
+      const endAngle = arc.endAngle;
+      const midAngle = startAngle + (endAngle - startAngle) / 2;
+      const x = arc.x;
+      const y = arc.y;
+      const outerRadius = arc.outerRadius;
+
+      // Line color from slice color
+      let color = Array.isArray(dataset.backgroundColor)
+        ? dataset.backgroundColor[index]
+        : dataset.backgroundColor;
+      if (!color) color = '#888';
+
+      // Short radial line outward from slice edge
+      const lineStartX = x + Math.cos(midAngle) * outerRadius;
+      const lineStartY = y + Math.sin(midAngle) * outerRadius;
+      const lineEndX = x + Math.cos(midAngle) * (outerRadius + 14);
+      const lineEndY = y + Math.sin(midAngle) * (outerRadius + 14);
+
+      ctx.beginPath();
+      ctx.strokeStyle = color as string;
+      ctx.lineWidth = 2;
+      ctx.moveTo(lineStartX, lineStartY);
+      ctx.lineTo(lineEndX, lineEndY);
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+} as any;
+
+Chart.register(zoomPlugin, ChartDataLabels, pieLeaderLinesPlugin);
 
 // Debounce hook delays updating value until stable for delay ms
 function useDebounce<T>(value: T, delay: number): T {
@@ -703,7 +748,7 @@ const ReportDashboard: React.FC = () => {
             color: '#333',
             font: { size: 11, weight: 'bold' },
             padding: 6,
-            clip: true,
+            clip: false,
           }
         }],
       };
@@ -764,7 +809,7 @@ const ReportDashboard: React.FC = () => {
             anchor: 'end',
             align: 'end',
             offset: 12,
-            clip: true,
+            clip: false,
           }
         }
       } as any;
