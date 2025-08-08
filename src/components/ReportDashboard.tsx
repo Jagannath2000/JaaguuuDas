@@ -365,24 +365,37 @@ const ReportDashboard: React.FC = () => {
       showToast("Map not found for sharing.");
       return;
     }
+    // Ensure tiles are loaded
+    if (!leafletTileLayerLoadedRefs.current.get(index)) {
+      await new Promise((res) => setTimeout(res, 500));
+    }
     leafletImage(mapInstance, async function (err: any, canvas: HTMLCanvasElement) {
       if (err) {
         showToast("Failed to capture map image.");
         return;
       }
       const imgData = canvas.toDataURL("image/png");
-      if ((navigator as any).share) {
-        await (navigator as any).share({
-          title: `Map ${index + 1}`,
-          text: "Check out this map!",
-          files: [await fetch(imgData).then(r => r.blob()).then(blob => new File([blob], `map_${index + 1}.png`, { type: "image/png" }))]
-        });
+      if ((navigator as any).share && (window as any).File) {
+        const blob = await (await fetch(imgData)).blob();
+        const file = new File([blob], `map_${index + 1}.png`, { type: "image/png" });
+        try {
+          await (navigator as any).share({
+            title: `Map ${index + 1}`,
+            text: "Check out this map!",
+            files: [file]
+          });
+        } catch (_e) {
+          // fallback to clipboard
+          await navigator.clipboard.writeText(imgData);
+          showToast("Map image copied to clipboard!");
+        }
       } else {
         await navigator.clipboard.writeText(imgData);
         showToast("Map image copied to clipboard!");
       }
     });
   };
+
 
   // Enhanced speech recognition effect with TTS interruption avoidance
   useEffect(() => {
@@ -913,21 +926,26 @@ const ReportDashboard: React.FC = () => {
     setShowOptionsDropdown(false);
   };
 
-  const handleDownloadMap = (index: number) => {
+  const handleDownloadMap = async (index: number) => {
     const mapInstance = leafletMapRefs.current.get(index);
     if (!mapInstance) {
       showToast("Map not found for download.");
       return;
+    }
+    // Ensure tiles are loaded
+    if (!leafletTileLayerLoadedRefs.current.get(index)) {
+      await new Promise((res) => setTimeout(res, 500));
     }
     leafletImage(mapInstance, function (err: any, canvas: HTMLCanvasElement) {
       if (err) {
         showToast("Failed to capture map image.");
         return;
       }
-      const imgData = canvas.toDataURL("image/jpeg", 0.9);
+      // Use PNG to avoid CORS re-encoding issues and preserve transparency
+      const imgData = canvas.toDataURL("image/png");
       const link = document.createElement("a");
       link.href = imgData;
-      link.download = `map_${index + 1}_${Date.now()}.jpg`;
+      link.download = `map_${index + 1}_${Date.now()}.png`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -1083,10 +1101,11 @@ const ReportDashboard: React.FC = () => {
             let mapInstance = leafletMapRefs.current.get(index);
             if (!mapInstance) {
               mapInstance = L.map(mapContainerElement, { zoomControl: true, attributionControl: false });
-              const tile = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+              const tile = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
                 attribution:
-                  "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors",
-                crossOrigin: true
+                  "&copy; OpenStreetMap contributors, © CARTO",
+                subdomains: 'abcd',
+                crossOrigin: 'anonymous'
               }).addTo(mapInstance);
               tile.on('load', () => {
                 leafletTileLayerLoadedRefs.current.set(index, true);
