@@ -14,6 +14,8 @@ import {
   MapPin,
   MoreVertical,
   Share2,
+  Sun,
+  Moon,
 } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -255,6 +257,27 @@ const ReportDashboard: React.FC = () => {
   const optionsDropdownRef = useRef<HTMLDivElement | null>(null);
   const [inputFocused, setInputFocused] = useState(false);
   const [voiceLevel, setVoiceLevel] = useState(0);
+  const [theme, setTheme] = useState<string>(() => {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('theme') || 'light';
+    }
+    return 'light';
+  });
+
+  // Apply theme to document root
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('theme', theme);
+    }
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === 'dark' ? 'light' : 'dark'));
 
   // Utility to get greeting based on time
   const getGreeting = () => {
@@ -1454,6 +1477,14 @@ const ReportDashboard: React.FC = () => {
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             aria-label="Ask a report question"
           />
+          <button
+            onClick={toggleTheme}
+            className="ml-2 rounded-full p-2 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            aria-label="Toggle theme"
+          >
+            {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+          </button>
 
           <div className="relative" ref={optionsDropdownRef}>
             <Button
