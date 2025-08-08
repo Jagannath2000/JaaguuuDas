@@ -667,6 +667,13 @@ const ReportDashboard: React.FC = () => {
           data: parsedData,
           timestamp: replyTimestamp,
         });
+        // Provide a brief spoken confirmation for chart/map responses
+        try {
+          const kind = result.type.replace("CHART_", "").toLowerCase();
+          await speakAndPauseListening(kind === 'map' ? 'Here is the map.' : `Here is the ${kind} chart.`);
+        } catch (e) {
+          console.error('TTS chart confirm error', e);
+        }
       }
     } catch (err) {
       setLoading(false);
