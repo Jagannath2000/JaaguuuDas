@@ -1130,7 +1130,7 @@ const ReportDashboard: React.FC = () => {
               mapInstance = L.map(mapContainerElement, { zoomControl: true, attributionControl: false, preferCanvas: true });
               const canvasRenderer = L.canvas({ padding: 0.5 });
               leafletCanvasRendererRefs.current.set(index, canvasRenderer as any);
-              const tile = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
+              const tile = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
                 attribution:
                   "&copy; OpenStreetMap contributors, © CARTO",
                 subdomains: 'abcd',
