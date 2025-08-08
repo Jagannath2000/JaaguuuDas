@@ -248,6 +248,7 @@ const ReportDashboard: React.FC = () => {
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const leafletMapRefs = useRef<Map<number, L.Map>>(new Map());
   const leafletMarkersRefs = useRef<Map<number, L.CircleMarker[]>>(new Map());
+  const leafletCanvasRendererRefs = useRef<Map<number, L.Canvas>>(new Map());
   const leafletTileLayerRefs = useRef<Map<number, L.TileLayer>>(new Map());
   const leafletTileLayerLoadedRefs = useRef<Map<number, boolean>>(new Map());
   const chartJsInstances = useRef<Map<number, Chart>>(new Map());
@@ -641,6 +642,7 @@ const ReportDashboard: React.FC = () => {
     leafletMarkersRefs.current.clear();
     leafletTileLayerRefs.current.clear();
     leafletTileLayerLoadedRefs.current.clear();
+    leafletCanvasRendererRefs.current.clear();
     chartJsInstances.current.forEach((chart) => chart.destroy());
     chartJsInstances.current.clear();
     setCurrentMapDisplayMode("india");
@@ -657,6 +659,7 @@ const ReportDashboard: React.FC = () => {
       const lng = d.value?.longitude;
       return typeof lat === "number" && typeof lng === "number" && isFinite(lat) && isFinite(lng);
     });
+    const renderer = leafletCanvasRendererRefs.current.get(mapIndex) || undefined;
     filtered.forEach((w) => {
       const latLng = L.latLng(w.value.latitude, w.value.longitude);
       const marker = L.circleMarker(latLng, {
@@ -666,6 +669,7 @@ const ReportDashboard: React.FC = () => {
         weight: 1,
         opacity: 1,
         fillOpacity: 0.9,
+        renderer: renderer as any,
       }).addTo(map);
       marker.bindPopup(`<div><strong>${w.label}</strong><br>Lat: ${w.value.latitude.toFixed(2)}, Lng: ${w.value.longitude.toFixed(2)}</div>`);
       marker.on("mouseover", () => marker.openPopup());
@@ -1123,7 +1127,9 @@ const ReportDashboard: React.FC = () => {
           if (mapContainerElement) {
             let mapInstance = leafletMapRefs.current.get(index);
             if (!mapInstance) {
-              mapInstance = L.map(mapContainerElement, { zoomControl: true, attributionControl: false });
+              mapInstance = L.map(mapContainerElement, { zoomControl: true, attributionControl: false, preferCanvas: true });
+              const canvasRenderer = L.canvas({ padding: 0.5 });
+              leafletCanvasRendererRefs.current.set(index, canvasRenderer as any);
               const tile = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
                 attribution:
                   "&copy; OpenStreetMap contributors, © CARTO",
@@ -1171,6 +1177,7 @@ const ReportDashboard: React.FC = () => {
         leafletMarkersRefs.current.delete(index);
         leafletTileLayerRefs.current.delete(index);
         leafletTileLayerLoadedRefs.current.delete(index);
+        leafletCanvasRendererRefs.current.delete(index);
       }
     });
 
@@ -1182,6 +1189,7 @@ const ReportDashboard: React.FC = () => {
       leafletMarkersRefs.current.clear();
       leafletTileLayerRefs.current.clear();
       leafletTileLayerLoadedRefs.current.clear();
+      leafletCanvasRendererRefs.current.clear();
     };
   }, [chartDataList, currentMapDisplayMode]);
 
