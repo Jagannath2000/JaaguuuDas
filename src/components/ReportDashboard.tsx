@@ -86,8 +86,8 @@ let dataArray: Uint8Array | null = null;
 let currentAudio: HTMLAudioElement | null = null;
 
 // Helper to speak text using ElevenLabs API with voice isolation and interruption support
-const ELEVENLABS_API_KEY = (typeof localStorage !== 'undefined' ? localStorage.getItem("ELEVENLABS_API_KEY") : null) || "";
-const ELEVENLABS_VOICE_ID = (typeof localStorage !== 'undefined' ? localStorage.getItem("ELEVENLABS_VOICE_ID") : null) || "";
+const ELEVENLABS_API_KEY = "sk_40a7915b680f498770c926e322a6210c766c9c7b6b44b737";
+const ELEVENLABS_VOICE_ID = "3gsg3cxXyFLcGIfNbM6C";
 
 const playElevenLabsTTS = async (text: string) => {
   try {
