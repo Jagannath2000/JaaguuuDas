@@ -931,6 +931,128 @@ const ReportDashboard: React.FC = () => {
     setShowOptionsDropdown(false);
   };
 
+  // Generate chat-style PDF containing all messages and rendered charts/maps
+  const handleDownloadAllPdf = async () => {
+    try {
+      const pdf = new jsPDF({ orientation: 'p', unit: 'px', format: 'a4' });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 16;
+      const maxWidth = pageWidth - margin * 2;
+      let cursorY = margin;
+
+      const lineHeight = 16;
+
+      const addNewPageIfNeeded = (heightNeeded: number) => {
+        if (cursorY + heightNeeded > pageHeight - margin) {
+          pdf.addPage();
+          cursorY = margin;
+        }
+      };
+
+      const drawChatBubble = async (
+        text: string,
+        isUser: boolean,
+      ) => {
+        const padding = 10;
+        const bubbleMaxWidth = Math.min(maxWidth * 0.7, 320);
+        const textLines = pdf.splitTextToSize(text, bubbleMaxWidth - padding * 2);
+        const textHeight = textLines.length * lineHeight;
+        const bubbleHeight = textHeight + padding * 2;
+        addNewPageIfNeeded(bubbleHeight + 10);
+        const bubbleWidth = bubbleMaxWidth;
+
+        const bubbleX = isUser
+          ? pageWidth - margin - bubbleWidth
+          : margin;
+
+        // bubble background
+        pdf.setFillColor(isUser ? 240 : 245, isUser ? 245 : 245, isUser ? 255 : 245);
+        pdf.roundedRect(bubbleX, cursorY, bubbleWidth, bubbleHeight, 6, 6, 'F');
+        // text
+        pdf.setTextColor(20, 20, 20);
+        pdf.text(textLines, bubbleX + padding, cursorY + padding + 10);
+        cursorY += bubbleHeight + 10;
+      };
+
+      const drawImageBubble = async (
+        imgData: string,
+        isUser: boolean,
+        title?: string
+      ) => {
+        const padding = 8;
+        const bubbleWidth = Math.min(maxWidth * 0.95, 500);
+        const bubbleX = isUser ? pageWidth - margin - bubbleWidth : margin;
+
+        // determine image size with max width
+        const img = new Image();
+        img.src = imgData;
+        await new Promise((res) => (img.onload = res));
+        const scale = Math.min(1, (bubbleWidth - padding * 2) / img.width);
+        const imgW = img.width * scale;
+        const imgH = img.height * scale;
+
+        const titleHeight = title ? lineHeight + 4 : 0;
+        const bubbleHeight = imgH + padding * 2 + titleHeight;
+        addNewPageIfNeeded(bubbleHeight + 10);
+
+        pdf.setFillColor(245, 247, 250);
+        pdf.roundedRect(bubbleX, cursorY, bubbleWidth, bubbleHeight, 6, 6, 'F');
+
+        if (title) {
+          pdf.setTextColor(60, 60, 60);
+          pdf.setFontSize(12);
+          pdf.text(title, bubbleX + padding, cursorY + padding + 10);
+        }
+
+        const imgX = bubbleX + padding;
+        const imgY = cursorY + padding + titleHeight;
+        pdf.addImage(imgData, 'PNG', imgX, imgY, imgW, imgH, undefined, 'FAST');
+
+        cursorY += bubbleHeight + 10;
+      };
+
+      // Render all chat messages
+      for (let i = 0; i < chartDataList.length; i++) {
+        const item = chartDataList[i];
+        const isUser = item.type === 'user';
+
+        if (item.type === 'user') {
+          await drawChatBubble(String(item.data), true);
+        } else if (item.type === 'text') {
+          await drawChatBubble(String(item.data), false);
+        } else if (item.type === 'CHART_MAP') {
+          const map = leafletMapRefs.current.get(i);
+          if (map) {
+            await new Promise<void>((resolve) => {
+              leafletImage(map, async (err: any, canvas: HTMLCanvasElement) => {
+                if (!err) {
+                  const imgData = canvas.toDataURL('image/png');
+                  await drawImageBubble(imgData, false, 'Map');
+                }
+                resolve();
+              });
+            });
+          }
+        } else if (item.type.startsWith('CHART_')) {
+          const chartInstance = chartJsInstances.current.get(i);
+          if (chartInstance) {
+            const canvas = chartInstance.canvas as HTMLCanvasElement;
+            const imgData = canvas.toDataURL('image/png');
+            const title = `${item.type.replace('CHART_', '')}`;
+            await drawImageBubble(imgData, false, title);
+          }
+        }
+      }
+
+      pdf.save(`report_${Date.now()}.pdf`);
+      setShowOptionsDropdown(false);
+    } catch (error) {
+      console.error('PDF generation failed', error);
+      showToast('Failed to generate PDF');
+    }
+  };
+
   // Effects
   useEffect(() => {
     chartDataList.forEach((item, index) => {
@@ -1323,6 +1445,12 @@ const ReportDashboard: React.FC = () => {
                   className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 whitespace-nowrap"
                 >
                   <ImageIcon className="w-4 h-4" /> Upload Photo
+                </button>
+                <button
+                  onClick={handleDownloadAllPdf}
+                  className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 whitespace-nowrap"
+                >
+                  <Download className="w-4 h-4" /> Download All (PDF)
                 </button>
                 <button
                   onClick={handleClearChat}
