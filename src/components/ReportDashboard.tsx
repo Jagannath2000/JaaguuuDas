@@ -144,6 +144,48 @@ const playElevenLabsTTS = async (text: string) => {
   }
 };
 
+/*
+// Free TTS alternative (browser SpeechSynthesis API)
+// How to use:
+// 1) Replace calls to playElevenLabsTTS(text) with playFreeTTSText(text)
+// 2) Optionally comment out ElevenLabs credentials
+// Notes:
+// - Works offline and free, but voice quality varies by browser/OS
+// - No network calls; supports interruption via speechSynthesis.cancel()
+
+const playFreeTTSText = async (text: string) => {
+  try {
+    // Stop any currently playing audio or ongoing speech
+    if (currentAudio) {
+      try { currentAudio.pause(); } catch {}
+      currentAudio = null;
+    }
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+      // small delay to ensure previous speech is cleared
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    // pick a voice if available (optional)
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v => /en/i.test(v.lang) && /female/i.test(v.name)) || voices[0];
+    if (preferred) utterance.voice = preferred;
+    utterance.rate = 1.0; // 0.1 - 10
+    utterance.pitch = 1.0; // 0 - 2
+    utterance.volume = 1.0; // 0 - 1
+
+    await new Promise<void>((resolve) => {
+      utterance.onend = () => resolve();
+      utterance.onerror = () => resolve();
+      window.speechSynthesis.speak(utterance);
+    });
+  } catch (e) {
+    console.error('Free TTS error:', e);
+  }
+};
+*/
+
 // Initialize audio context for voice activity detection
 const initializeAudioContext = async () => {
   try {
