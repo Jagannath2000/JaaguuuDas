@@ -246,6 +246,8 @@ const ReportDashboard: React.FC = () => {
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const leafletMapRefs = useRef<Map<number, L.Map>>(new Map());
   const leafletMarkersRefs = useRef<Map<number, L.CircleMarker[]>>(new Map());
+  const leafletTileLayerRefs = useRef<Map<number, L.TileLayer>>(new Map());
+  const leafletTileLayerLoadedRefs = useRef<Map<number, boolean>>(new Map());
   const chartJsInstances = useRef<Map<number, Chart>>(new Map());
   const [currentMapDisplayMode, setCurrentMapDisplayMode] = useState<"india" | "world">("india");
   const token = (typeof localStorage !== 'undefined' ? localStorage.getItem("token") : null) || "mock-token-for-testing";
@@ -601,6 +603,8 @@ const ReportDashboard: React.FC = () => {
     leafletMapRefs.current.forEach((map) => map.remove());
     leafletMapRefs.current.clear();
     leafletMarkersRefs.current.clear();
+    leafletTileLayerRefs.current.clear();
+    leafletTileLayerLoadedRefs.current.clear();
     chartJsInstances.current.forEach((chart) => chart.destroy());
     chartJsInstances.current.clear();
     setCurrentMapDisplayMode("india");
@@ -1024,6 +1028,11 @@ const ReportDashboard: React.FC = () => {
         } else if (item.type === 'CHART_MAP') {
           const map = leafletMapRefs.current.get(i);
           if (map) {
+            // Ensure base tiles are loaded before snapshot
+            const isLoaded = leafletTileLayerLoadedRefs.current.get(i);
+            if (!isLoaded) {
+              await new Promise((res) => setTimeout(res, 500));
+            }
             await new Promise<void>((resolve) => {
               leafletImage(map, async (err: any, canvas: HTMLCanvasElement) => {
                 if (!err) {
@@ -1074,10 +1083,15 @@ const ReportDashboard: React.FC = () => {
             let mapInstance = leafletMapRefs.current.get(index);
             if (!mapInstance) {
               mapInstance = L.map(mapContainerElement, { zoomControl: true, attributionControl: false });
-              L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+              const tile = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
                 attribution:
                   "&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors",
+                crossOrigin: true
               }).addTo(mapInstance);
+              tile.on('load', () => {
+                leafletTileLayerLoadedRefs.current.set(index, true);
+              });
+              leafletTileLayerRefs.current.set(index, tile as any);
               leafletMapRefs.current.set(index, mapInstance);
             }
             mapInstance.invalidateSize();
@@ -1113,6 +1127,8 @@ const ReportDashboard: React.FC = () => {
         map.remove();
         leafletMapRefs.current.delete(index);
         leafletMarkersRefs.current.delete(index);
+        leafletTileLayerRefs.current.delete(index);
+        leafletTileLayerLoadedRefs.current.delete(index);
       }
     });
 
@@ -1122,6 +1138,8 @@ const ReportDashboard: React.FC = () => {
       leafletMapRefs.current.forEach((map) => map.remove());
       leafletMapRefs.current.clear();
       leafletMarkersRefs.current.clear();
+      leafletTileLayerRefs.current.clear();
+      leafletTileLayerLoadedRefs.current.clear();
     };
   }, [chartDataList, currentMapDisplayMode]);
 
