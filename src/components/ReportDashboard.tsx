@@ -84,24 +84,46 @@ let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let dataArray: Uint8Array | null = null;
 let currentAudio: HTMLAudioElement | null = null;
+const VOICE_DEBUG = false;
+const ENABLE_FREE_TTS_FALLBACK = false;
 
 // Helper to speak text using ElevenLabs API with voice isolation and interruption support
 const ELEVENLABS_API_KEY = "sk_40a7915b680f498770c926e322a6210c766c9c7b6b44b737";
 const ELEVENLABS_VOICE_ID = "3gsg3cxXyFLcGIfNbM6C";
 
+const unlockAudioIfNeeded = async () => {
+  try {
+    if (!audioContext) return;
+    if (audioContext.state !== 'running') {
+      await audioContext.resume();
+    }
+    // fire a short silent sound to fully unlock on some browsers
+    const osc = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    gain.gain.value = 0.0001;
+    osc.connect(gain).connect(audioContext.destination);
+    osc.start();
+    osc.stop(audioContext.currentTime + 0.02);
+  } catch (e) {
+    if (VOICE_DEBUG) console.warn('unlockAudioIfNeeded error', e);
+  }
+};
+
 const playElevenLabsTTS = async (text: string) => {
   try {
+    const toSpeak = (text || '').trim();
+    if (!toSpeak) return;
     if (!ELEVENLABS_API_KEY || !ELEVENLABS_VOICE_ID) {
-      // Fallback: speak nothing if keys are missing
       await new Promise((r) => setTimeout(r, 300));
       return;
     }
 
-    // Stop any currently playing audio
     if (currentAudio) {
-      currentAudio.pause();
+      try { currentAudio.pause(); } catch {}
       currentAudio = null;
     }
+
+    await unlockAudioIfNeeded();
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
@@ -112,7 +134,7 @@ const playElevenLabsTTS = async (text: string) => {
           "xi-api-key": ELEVENLABS_API_KEY,
         },
         body: JSON.stringify({
-          text,
+          text: toSpeak,
           voice_settings: { stability: 0.5, similarity_boost: 0.5 },
         }),
       }
@@ -123,9 +145,20 @@ const playElevenLabsTTS = async (text: string) => {
     const audioBlob = await response.blob();
     const audioUrl = URL.createObjectURL(audioBlob);
     const audio = new Audio(audioUrl);
+    audio.preload = 'auto';
     currentAudio = audio;
 
-    await audio.play();
+    const tryPlay = async () => {
+      try {
+        await audio.play();
+      } catch (err: any) {
+        if (VOICE_DEBUG) console.warn('audio.play error, retrying after resume', err);
+        try { await unlockAudioIfNeeded(); } catch {}
+        await audio.play();
+      }
+    };
+
+    await tryPlay();
 
     return new Promise<void>((resolve) => {
       audio.onended = () => {
@@ -140,6 +173,15 @@ const playElevenLabsTTS = async (text: string) => {
   } catch (err) {
     console.error("ElevenLabs TTS error:", err);
     currentAudio = null;
+    if (ENABLE_FREE_TTS_FALLBACK) {
+      try {
+        // @ts-ignore - free TTS may be commented out; enable when needed
+        await playFreeTTSText(text);
+        return;
+      } catch (e) {
+        console.error('Fallback TTS failed:', e);
+      }
+    }
     throw err;
   }
 };
@@ -335,20 +377,26 @@ const ReportDashboard: React.FC = () => {
   // Speak helper that pauses listening during TTS and resumes after
   const speakAndPauseListening = async (text: string) => {
     try {
+      const toSpeak = (text || '').trim();
+      if (!toSpeak) return;
       setIsTTSPlaying(true);
       if (listening) SpeechRecognition.stopListening();
-      await playElevenLabsTTS(text);
+      await playElevenLabsTTS(toSpeak);
     } catch (error) {
       console.error("TTS Error:", error);
     } finally {
       setIsTTSPlaying(false);
       if (browserSupportsSpeechRecognition) {
-        SpeechRecognition.startListening({
-          continuous: true,
-          language: 'en-US',
-          interimResults: true,
-        });
-        setAwaitingMoreQuestion(true);
+        try {
+          SpeechRecognition.startListening({
+            continuous: true,
+            language: 'en-US',
+            interimResults: true,
+          });
+          setAwaitingMoreQuestion(true);
+        } catch (e) {
+          if (VOICE_DEBUG) console.warn('startListening failed', e);
+        }
       }
     }
   };
@@ -362,6 +410,7 @@ const ReportDashboard: React.FC = () => {
 
     try {
       await initializeAudioContext();
+      await unlockAudioIfNeeded();
     } catch {}
 
     // If currently listening, stop everything (stop action)
