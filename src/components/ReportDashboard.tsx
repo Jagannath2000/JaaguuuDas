@@ -84,6 +84,8 @@ let audioContext: AudioContext | null = null;
 let analyser: AnalyserNode | null = null;
 let dataArray: Uint8Array | null = null;
 let currentAudio: HTMLAudioElement | null = null;
+let micStream: MediaStream | null = null;
+let microphoneSource: MediaStreamAudioSourceNode | null = null;
 const VOICE_DEBUG = false;
 const ENABLE_FREE_TTS_FALLBACK = false;
 
@@ -238,6 +240,23 @@ const initializeAudioContext = async () => {
       analyser.fftSize = 256;
       dataArray = new Uint8Array(analyser.frequencyBinCount);
     }
+    // Setup microphone with echo cancellation and connect to analyser once
+    if (!micStream) {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
+          sampleRate: 44100,
+        } as any,
+        video: false,
+      });
+    }
+    if (audioContext && analyser && micStream && !microphoneSource) {
+      microphoneSource = audioContext.createMediaStreamSource(micStream);
+      microphoneSource.connect(analyser);
+    }
   } catch (error) {
     console.error("Error initializing audio context:", error);
   }
@@ -323,6 +342,8 @@ const ReportDashboard: React.FC = () => {
     listening,
     resetTranscript,
     browserSupportsSpeechRecognition,
+    // @ts-ignore react-speech-recognition provides this
+    finalTranscript,
   } = useSpeechRecognition();
 
   const debouncedSpeech = useDebounce<string>(transcript, 800);
@@ -349,6 +370,8 @@ const ReportDashboard: React.FC = () => {
     return 'light';
   });
   const hasGreetedOnce = useRef<boolean>(false);
+  const lastAutoSentRef = useRef<string>("");
+  const lastSpeechAtRef = useRef<number>(0);
 
   // Apply theme to document root
   useEffect(() => {
@@ -541,6 +564,40 @@ const ReportDashboard: React.FC = () => {
   };
 
 
+  // Track speech activity timestamps
+  useEffect(() => {
+    if (!listening || isTTSPlaying) return;
+    const t = (transcript || "").trim();
+    if (t.length > 0) lastSpeechAtRef.current = Date.now();
+  }, [transcript, listening, isTTSPlaying]);
+
+  // Auto-send when final transcript arrives
+  useEffect(() => {
+    if (!listening || isTTSPlaying) return;
+    const ft = (finalTranscript || "").trim();
+    if (ft && ft.length > 2 && ft !== lastAutoSentRef.current) {
+      lastAutoSentRef.current = ft;
+      handleSend(ft);
+      resetTranscript();
+    }
+  }, [finalTranscript, listening, isTTSPlaying]);
+
+  // Fallback: auto-send after brief silence if we have interim transcript
+  useEffect(() => {
+    const SILENCE_MS = 900;
+    const check = () => {
+      if (!listening || isTTSPlaying) return;
+      const t = (transcript || "").trim();
+      if (t.length > 2 && Date.now() - lastSpeechAtRef.current > SILENCE_MS && t !== lastAutoSentRef.current) {
+        lastAutoSentRef.current = t;
+        handleSend(t);
+        resetTranscript();
+      }
+    };
+    const interval = setInterval(check, 250);
+    return () => clearInterval(interval);
+  }, [transcript, listening, isTTSPlaying]);
+
   // Enhanced speech recognition effect with TTS interruption avoidance
   useEffect(() => {
     if (!listening) return;
@@ -555,17 +612,12 @@ const ReportDashboard: React.FC = () => {
     // Stop commands
     if (awaitingMoreQuestion && ["no", "no more", "no thanks", "that's all", "stop", "bye"].some(cmd => lower.includes(cmd))) {
       speakAndPauseListening("Okay, have a great day!");
-      SpeechRecognition.stopListening();
+      try { SpeechRecognition.stopListening(); } catch {}
       setAwaitingMoreQuestion(false);
       resetTranscript();
       return;
     }
-
-    // Process when meaningful
-    if (trimmed.length > 2) {
-      handleSend(trimmed);
-      resetTranscript();
-    }
+    // Do not send here; finalTranscript and silence handler will manage sending
   }, [debouncedSpeech, listening, awaitingMoreQuestion, isTTSPlaying]);
 
   // Ignore immediate transcripts during TTS
