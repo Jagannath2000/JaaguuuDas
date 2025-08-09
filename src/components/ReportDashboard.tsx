@@ -1402,13 +1402,18 @@ const ReportDashboard: React.FC = () => {
         .full-bleed .max-w-5xl { max-width: none; }
         .full-bleed .w-full { width: 100%; }
 
-        /* Scrollbar theming */
+        /* Scrollbar theming - keep dimensions the same across themes */
         /* WebKit */
+        ::-webkit-scrollbar { width: 10px; height: 10px; }
+        ::-webkit-scrollbar-track { background: #f2f2f2; }
+        ::-webkit-scrollbar-thumb { background: #c3c3c3; border-radius: 8px; border: 2px solid #f2f2f2; }
+        ::-webkit-scrollbar-thumb:hover { background: #b3b3b3; }
         .dark ::-webkit-scrollbar { width: 10px; height: 10px; }
         .dark ::-webkit-scrollbar-track { background: #0b0b0b; }
         .dark ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 8px; border: 2px solid #0b0b0b; }
         .dark ::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
         /* Firefox */
+        html { scrollbar-width: thin; scrollbar-color: #c3c3c3 #f2f2f2; }
         .dark { scrollbar-width: thin; scrollbar-color: #3a3a3a #0b0b0b; }
       `}</style>
       <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto pb-28">
