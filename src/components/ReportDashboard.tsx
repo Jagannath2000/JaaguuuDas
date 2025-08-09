@@ -1395,7 +1395,22 @@ const ReportDashboard: React.FC = () => {
   let lastDisplayedDate: string | null = null;
 
   return (
-    <div className="relative flex flex-col min-h-screen bg-white dark:bg-gray-900 text-black dark:text-white font-inter">
+    <div className="relative flex flex-col min-h-screen bg-white dark:bg-gray-900 text-black dark:text-white font-inter full-bleed">
+      <style>{`
+        /* Full-bleed content: remove page gutters around child content */
+        .full-bleed > .flex-1 { padding-left: 0; padding-right: 0; }
+        .full-bleed .max-w-5xl { max-width: none; }
+        .full-bleed .w-full { width: 100%; }
+
+        /* Scrollbar theming */
+        /* WebKit */
+        .dark ::-webkit-scrollbar { width: 10px; height: 10px; }
+        .dark ::-webkit-scrollbar-track { background: #0b0b0b; }
+        .dark ::-webkit-scrollbar-thumb { background: #3a3a3a; border-radius: 8px; border: 2px solid #0b0b0b; }
+        .dark ::-webkit-scrollbar-thumb:hover { background: #4a4a4a; }
+        /* Firefox */
+        .dark { scrollbar-width: thin; scrollbar-color: #3a3a3a #0b0b0b; }
+      `}</style>
       <div className="flex-1 px-4 py-4 space-y-4 overflow-y-auto pb-28">
         <div className="w-full max-w-5xl mx-auto space-y-4" ref={chatContainerRef}>
           {chartDataList.map((item, index) => {
