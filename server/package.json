@@ -1,0 +1,42 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.json"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "type": "module",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.21.2",
+    "@langchain/core": "^0.3.68",
+    "@langchain/openai": "^0.6.7",
+    "cheerio": "^1.1.2",
+    "cors": "^2.8.5",
+    "crypto-js": "^4.2.0",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "lancedb": "^0.0.1",
+    "langchain": "^0.3.30",
+    "node-html-parser": "^7.0.1",
+    "openai": "^5.12.2",
+    "p-limit": "^6.2.0",
+    "p-queue": "^8.1.0",
+    "sitemapper": "^4.0.2",
+    "undici": "^7.13.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.2.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}
