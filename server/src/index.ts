@@ -69,11 +69,18 @@ async function extractLinksAndText(baseUrl: string, html: string) {
       links.add(normalizeUrl(resolved));
     } catch {}
   });
-  // Try to capture main image for the page (og:image)
-  let image: string | null = null;
+  // Collect image URLs (og:image and <img>)
+  const images = new Set<string>();
   const og = $('meta[property="og:image"]').attr('content');
-  if (og) image = new URL(og, baseUrl).toString();
-  return { text, links: Array.from(links), image };
+  if (og) {
+    try { images.add(new URL(og, baseUrl).toString()); } catch {}
+  }
+  $('img[src]').each((_, el) => {
+    const src = $(el).attr('src');
+    if (!src) return;
+    try { images.add(new URL(src, baseUrl).toString()); } catch {}
+  });
+  return { text, links: Array.from(links), images: Array.from(images).slice(0, 8) };
 }
 
 // LanceDB removed; we will maintain one table per site (domain) in Postgres
@@ -94,7 +101,7 @@ app.post('/api/crawl', async (req: Request, res: Response) => {
     const visited = new Set<string>();
     const queue = new PQueue({ concurrency: 4, interval: 1000, intervalCap: 8 });
 
-    const pages: Array<{ url: string; text: string; image: string | null }> = [];
+    const pages: Array<{ url: string; text: string; images: string[] }> = [];
 
     async function visit(target: string) {
       if (visited.size >= maxPages) return;
@@ -103,8 +110,8 @@ app.post('/api/crawl', async (req: Request, res: Response) => {
       visited.add(target);
       try {
         const html = await fetchHtml(target);
-        const { text, links, image } = await extractLinksAndText(target, html);
-        if (text.length > 50) pages.push({ url: target, text, image });
+        const { text, links, images } = await extractLinksAndText(target, html);
+        if (text.length > 50) pages.push({ url: target, text, images });
         for (const link of links) {
           if (visited.size + queue.size >= maxPages) break;
           if (!visited.has(link)) queue.add(() => visit(link));
@@ -126,7 +133,7 @@ app.post('/api/crawl', async (req: Request, res: Response) => {
 
 app.post('/api/ingest', async (req: Request, res: Response) => {
   try {
-    const { url, pages } = req.body as { url: string; pages: Array<{ url: string; text: string; image?: string | null }> };
+    const { url, pages } = req.body as { url: string; pages: Array<{ url: string; text: string; images?: string[] }> };
     if (!url || !Array.isArray(pages)) return res.status(400).json({ error: 'Invalid payload' });
     const domain = new URL(url).hostname;
     const tableName = domain.replace(/[^a-zA-Z0-9_]/g, '_');
@@ -141,13 +148,13 @@ app.post('/api/ingest', async (req: Request, res: Response) => {
       const id = crypto.createHash('sha1').update(p.url).digest('hex');
       const title = titleFromUrl(p.url);
       const content = contents[i];
-      const image = p.image || '';
+      const images = p.images ?? [];
       const embedding = embeddings[i];
       await client.query(
-        `INSERT INTO ${tableName} (id, url, title, content, image, embedding)
+        `INSERT INTO ${tableName} (id, url, title, content, images, embedding)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, image = EXCLUDED.image, embedding = EXCLUDED.embedding`,
-        [id, p.url, title, content, image, pgvector.toSql(embedding)]
+         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, images = EXCLUDED.images, embedding = EXCLUDED.embedding`,
+        [id, p.url, title, content, JSON.stringify(images), pgvector.toSql(embedding)]
       );
     }
 
@@ -167,9 +174,8 @@ app.post('/api/query', async (req: Request, res: Response) => {
     const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
     const queryEmbedding = await embedder.embedQuery(question);
 
-    // Vector search using cosine distance
     const { rows } = await client.query(
-      `SELECT id, url, title, content, image
+      `SELECT id, url, title, content, images
        FROM ${tableName}
        ORDER BY embedding <=> $1
        LIMIT $2`,
@@ -186,7 +192,7 @@ app.post('/api/query', async (req: Request, res: Response) => {
     const llm = new ChatOpenAI({ temperature: 0.2, model: 'gpt-4o-mini', apiKey: OPENAI_API_KEY });
     const answer = OPENAI_API_KEY ? (await llm.call([system, human])).content : 'Set OPENAI_API_KEY to enable answers.';
 
-    const related = rows.map((r: any) => ({ title: r.title, url: r.url, image: r.image })).slice(0, 6);
+    const related = rows.map((r: any) => ({ title: r.title, url: r.url, images: Array.isArray(r.images) ? r.images : (r.images ? JSON.parse(r.images) : []) })).slice(0, 6);
 
     res.json({ answer, related });
   } catch (e: any) {
