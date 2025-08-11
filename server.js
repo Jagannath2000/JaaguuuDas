@@ -22,17 +22,35 @@ app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h', index: fa
 // In-memory session store (demo-grade)
 const sessions = new Map();
 
+// Provider selection
+const aiProvider = (process.env.AI_PROVIDER || '').toLowerCase();
+const useOpenAI = aiProvider === 'openai' || (!!process.env.OPENAI_API_KEY && aiProvider !== 'gemini');
+const useGemini = aiProvider === 'gemini' || (!!process.env.GEMINI_API_KEY && aiProvider !== 'openai');
+
 let openaiClient = null;
 const openaiModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-async function initOpenAI() {
-  if (!process.env.OPENAI_API_KEY) return;
-  try {
-    const OpenAI = (await import('openai')).default;
-    openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    console.log('OpenAI client initialized');
-  } catch (err) {
-    console.error('Failed to initialize OpenAI client:', err.message);
+let geminiClient = null;
+const geminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+
+async function initAIClients() {
+  if (useOpenAI && process.env.OPENAI_API_KEY) {
+    try {
+      const OpenAI = (await import('openai')).default;
+      openaiClient = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      console.log('OpenAI client initialized');
+    } catch (err) {
+      console.error('Failed to initialize OpenAI client:', err.message);
+    }
+  }
+  if (useGemini && process.env.GEMINI_API_KEY) {
+    try {
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      console.log('Gemini client initialized');
+    } catch (err) {
+      console.error('Failed to initialize Gemini client:', err.message);
+    }
   }
 }
 
@@ -64,12 +82,36 @@ function ruleBasedReply(text) {
   if (/(^|\b)(hi|hello|hey)(\b|!|\.)/.test(t)) return 'Hi! How can I help you today?';
   if (/pricing|cost|price/.test(t)) return 'For pricing, please share your email and company, and our team will reach out.';
   if (/contact|sales|demo/.test(t)) return 'I can connect you. Please provide your name, email, and company.';
-  return `You said: "${text}". Connect a model via OPENAI_API_KEY for smarter answers.`;
+  return `You said: "${text}". Connect a model via OPENAI_API_KEY or GEMINI_API_KEY for smarter answers.`;
 }
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, provider: useOpenAI ? 'openai' : useGemini ? 'gemini' : 'rules' });
 });
+
+async function replyWithOpenAI(messages) {
+  const completion = await openaiClient.chat.completions.create({
+    model: openaiModel,
+    messages,
+    temperature: 0.3
+  });
+  return completion.choices?.[0]?.message?.content?.trim() || '...';
+}
+
+async function replyWithGemini(messages) {
+  // Convert OpenAI-style messages to a single prompt for Gemini
+  const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
+  const convo = messages
+    .filter(m => m.role !== 'system')
+    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n');
+  const prompt = `${sys}\n\n${convo}\nAssistant:`;
+
+  const model = geminiClient.getGenerativeModel({ model: geminiModel });
+  const result = await model.generateContent(prompt);
+  const text = result?.response?.text?.() || result?.response?.candidates?.[0]?.content?.parts?.[0]?.text;
+  return (typeof text === 'function' ? text() : text) || '...';
+}
 
 app.post('/api/message', async (req, res) => {
   const { sessionId, message, user, context } = req.body || {};
@@ -85,12 +127,10 @@ app.post('/api/message', async (req, res) => {
   try {
     if (openaiClient) {
       const messages = buildMessages(context, history);
-      const completion = await openaiClient.chat.completions.create({
-        model: openaiModel,
-        messages,
-        temperature: 0.3
-      });
-      reply = completion.choices?.[0]?.message?.content?.trim() || '...';
+      reply = await replyWithOpenAI(messages);
+    } else if (geminiClient) {
+      const messages = buildMessages(context, history);
+      reply = await replyWithGemini(messages);
     } else {
       reply = ruleBasedReply(message, context);
     }
@@ -125,5 +165,5 @@ app.get('/', (req, res) => {
 
 app.listen(port, () => {
   console.log(`Chatbot server running on http://localhost:${port}`);
-  initOpenAI();
+  initAIClients();
 });
