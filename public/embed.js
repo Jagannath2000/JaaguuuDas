@@ -5,10 +5,11 @@
   const primary = script.getAttribute('data-primary-color') || '#0061ff';
   const company = script.getAttribute('data-company') || '';
   const position = script.getAttribute('data-position') || 'right'; // 'right' | 'left'
+  const siteUrl = script.getAttribute('data-site-url') || '';
 
   const sessionKey = 'embchat_session_v1';
   let sessionId = localStorage.getItem(sessionKey) || null;
-  const context = { company };
+  const context = { company, siteUrl };
 
   const container = document.createElement('div');
   container.style.all = 'initial';

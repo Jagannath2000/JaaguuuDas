@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { load as loadHtml } from 'cheerio';
 
 dotenv.config();
 
@@ -68,7 +69,7 @@ function buildMessages(context, history) {
   ];
   if (context && typeof context === 'object') {
     for (const [key, value] of Object.entries(context)) {
-      if (value) {
+      if (value && key !== 'siteSummary') {
         system.push({ role: 'system', content: `${key}: ${String(value)}` });
       }
     }
@@ -99,7 +100,6 @@ async function replyWithOpenAI(messages) {
 }
 
 async function replyWithGemini(messages) {
-  // Convert OpenAI-style messages to a single prompt for Gemini
   const sys = messages.filter(m => m.role === 'system').map(m => m.content).join('\n');
   const convo = messages
     .filter(m => m.role !== 'system')
@@ -113,6 +113,81 @@ async function replyWithGemini(messages) {
   return (typeof text === 'function' ? text() : text) || '...';
 }
 
+// Simple website fetch + extract + cache + optional summary
+const siteCache = new Map(); // url -> { summary, title, fetchedAt }
+const SITE_TTL_MS = 10 * 60 * 1000;
+
+async function fetchHtml(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    });
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractTextFromHtml(html) {
+  const $ = loadHtml(html);
+  $('script, style, noscript, svg, iframe, canvas').remove();
+  const title = ($('title').first().text() || '').trim();
+  const main = $('main').text() || $('article').text() || $('body').text();
+  const text = (main || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\u00a0/g, ' ')
+    .trim();
+  return { title, text };
+}
+
+async function summarizeContent(rawText, title) {
+  const input = `${title ? `Title: ${title}\n\n` : ''}${rawText}`.slice(0, 24000);
+  const messages = [
+    { role: 'system', content: 'Summarize the following webpage into concise bullet points with key offerings, services, industries, differentiators, locations, and contact/CTA info. Keep it under 1200 words. Preserve factual details. Use neutral tone.' },
+    { role: 'user', content: input }
+  ];
+  try {
+    if (openaiClient) return await replyWithOpenAI(messages);
+    if (geminiClient) return await replyWithGemini(messages);
+  } catch (e) {
+    console.error('Summary generation failed:', e.message);
+  }
+  return input.slice(0, 2000);
+}
+
+async function getSiteSummary(url) {
+  try {
+    const now = Date.now();
+    const cached = siteCache.get(url);
+    if (cached && now - cached.fetchedAt < SITE_TTL_MS) return cached;
+
+    const html = await fetchHtml(url);
+    const { title, text } = extractTextFromHtml(html);
+    const summary = await summarizeContent(text, title);
+    const value = { summary, title, fetchedAt: now };
+    siteCache.set(url, value);
+    return value;
+  } catch (e) {
+    console.error('getSiteSummary error:', e.message);
+    return null;
+  }
+}
+
+app.get('/api/fetch', async (req, res) => {
+  const url = req.query.url;
+  if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
+  const info = await getSiteSummary(url);
+  if (!info) return res.status(502).json({ error: 'Failed to fetch or summarize' });
+  res.json(info);
+});
+
 app.post('/api/message', async (req, res) => {
   const { sessionId, message, user, context } = req.body || {};
   if (!message || typeof message !== 'string') {
@@ -125,11 +200,20 @@ app.post('/api/message', async (req, res) => {
 
   let reply = '';
   try {
+    let messages = buildMessages(context, history);
+
+    // If a site URL was provided, fetch and include the summary as extra system context
+    const siteUrl = context?.siteUrl || context?.url;
+    if (siteUrl && /^https?:\/\//i.test(siteUrl)) {
+      const site = await getSiteSummary(siteUrl);
+      if (site?.summary) {
+        messages.unshift({ role: 'system', content: `Website context from ${siteUrl} (title: ${site.title || 'n/a'}):\n${site.summary}` });
+      }
+    }
+
     if (openaiClient) {
-      const messages = buildMessages(context, history);
       reply = await replyWithOpenAI(messages);
     } else if (geminiClient) {
-      const messages = buildMessages(context, history);
       reply = await replyWithGemini(messages);
     } else {
       reply = ruleBasedReply(message, context);
@@ -157,8 +241,8 @@ app.get('/', (req, res) => {
 <body>
   <h1>Embeddable Chatbot Demo</h1>
   <p>Open this page and use the floating chat widget, or embed from another site using the script below.</p>
-  <pre><code>&lt;script src="${req.protocol}://${req.get('host')}/embed.js" data-api-base="${req.protocol}://${req.get('host')}" data-title="Website Assistant" data-primary-color="#0061ff" data-company="Acme Inc"&gt;&lt;/script&gt;</code></pre>
-  <script src="/embed.js" data-api-base="${req.protocol}://${req.get('host')}" data-title="Website Assistant" data-primary-color="#0061ff" data-company="Acme Inc"></script>
+  <pre><code>&lt;script src="${req.protocol}://${req.get('host')}/embed.js" data-api-base="${req.protocol}://${req.get('host')}" data-title="Website Assistant" data-primary-color="#0061ff" data-company="Acme Inc" data-site-url="https://hutechsolutions.com/"&gt;&lt;/script&gt;</code></pre>
+  <script src="/embed.js" data-api-base="${req.protocol}://${req.get('host')}" data-title="Website Assistant" data-primary-color="#0061ff" data-company="Acme Inc" data-site-url="https://hutechsolutions.com/"></script>
 </body>
 </html>`);
 });
