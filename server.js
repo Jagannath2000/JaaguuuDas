@@ -69,9 +69,12 @@ function buildMessages(context, history) {
   ];
   if (context && typeof context === 'object') {
     for (const [key, value] of Object.entries(context)) {
-      if (value && key !== 'siteSummary') {
+      if (value && key !== 'siteSummary' && key !== 'siteFactsJson') {
         system.push({ role: 'system', content: `${key}: ${String(value)}` });
       }
+    }
+    if (context.siteFactsJson) {
+      system.push({ role: 'system', content: `Website facts (JSON): ${context.siteFactsJson}` });
     }
   }
   const messages = system.concat(history.map(m => ({ role: m.role, content: m.content })));
@@ -144,7 +147,7 @@ function extractTextFromHtml(html) {
     .replace(/\s+/g, ' ')
     .replace(/\u00a0/g, ' ')
     .trim();
-  return { title, text };
+  return { title, text, $ };
 }
 
 async function summarizeContent(rawText, title) {
@@ -180,13 +183,188 @@ async function getSiteSummary(url) {
   }
 }
 
-app.get('/api/fetch', async (req, res) => {
+// ----- Crawler and entity extraction -----
+const knowledgeCache = new Map(); // origin -> { people, emails, links, images, crawledAt }
+const KNOW_TTL_MS = 60 * 60 * 1000;
+
+function toOrigin(u) {
+  try { return new URL(u).origin; } catch { return ''; }
+}
+function sameOrigin(a, b) {
+  return toOrigin(a) && toOrigin(a) === toOrigin(b);
+}
+function normalizeUrl(base, href) {
+  try { return new URL(href, base).toString(); } catch { return null; }
+}
+
+function extractEntities($, pageUrl) {
+  const text = $('body').text().replace(/\s+/g, ' ').trim();
+  const emails = new Set();
+  const links = new Set();
+  const images = new Set();
+  const people = [];
+
+  // Emails from mailto and text
+  $('a[href^="mailto:"]').each((_, el) => {
+    const email = ($(el).attr('href') || '').replace(/^mailto:/i, '').split('?')[0];
+    if (email) emails.add(email);
+  });
+  const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  for (const m of text.match(emailRegex) || []) emails.add(m);
+
+  // Links and LinkedIn
+  $('a[href]').each((_, el) => {
+    const href = $(el).attr('href');
+    try { links.add(new URL(href, pageUrl).toString()); } catch {}
+  });
+
+  // Images
+  $('img[src]').each((_, el) => {
+    const src = $(el).attr('src');
+    try { images.add(new URL(src, pageUrl).toString()); } catch {}
+  });
+
+  // Heuristic: leadership/team sections
+  const candidateSections = [];
+  $('section, div, ul, article').each((_, el) => {
+    const s = $(el);
+    const heading = s.find('h1,h2,h3,h4').first().text().toLowerCase();
+    if (/team|leadership|management|about/i.test(heading)) candidateSections.push(s);
+  });
+  const scopes = candidateSections.length ? candidateSections : [$("body")];
+
+  scopes.forEach(scope => {
+    scope.find('li, .card, .member, .person, article, div').each((_, el) => {
+      const block = $(el);
+      const blockText = block.text().replace(/\s+/g, ' ').trim();
+      if (!/(ceo|chief executive|founder|co[- ]founder|cto|cfo|coo|director|head)/i.test(blockText)) return;
+
+      // Name guess: from headings or strong tags
+      const name = block.find('h1,h2,h3,h4,strong,b').first().text().trim() || (blockText.split(/[\.,\n]/)[0] || '').trim();
+      if (!name || name.length < 2 || name.length > 80) return;
+
+      // Role guess
+      let role = '';
+      const roleMatch = blockText.match(/(chief [a-z ]+ officer|ceo|cto|cfo|coo|founder|co[- ]founder|director|head of [^\.,]+)/i);
+      if (roleMatch) role = roleMatch[0];
+
+      // Links
+      let linkedin = '';
+      block.find('a[href*="linkedin.com"]').each((_, a) => {
+        if (!linkedin) linkedin = new URL($(a).attr('href'), pageUrl).toString();
+      });
+
+      // Image near person
+      let image = '';
+      const img = block.find('img[src]').first();
+      if (img && img.attr('src')) {
+        try { image = new URL(img.attr('src'), pageUrl).toString(); } catch {}
+      }
+
+      // Email in block
+      let email = '';
+      block.find('a[href^="mailto:"]').each((_, a) => { if (!email) email = ($(a).attr('href') || '').replace(/^mailto:/i, '').split('?')[0]; });
+
+      // Profile URL (self link)
+      let profileUrl = '';
+      const selfLink = block.find('a[href]').first();
+      if (selfLink && selfLink.attr('href')) {
+        try { profileUrl = new URL(selfLink.attr('href'), pageUrl).toString(); } catch {}
+      }
+
+      const person = { name, role, email, linkedin, image, profileUrl };
+      // De-dup by name+role
+      if (!people.some(p => p.name.toLowerCase() === name.toLowerCase() && (!p.role || p.role === role))) {
+        people.push(person);
+      }
+    });
+  });
+
+  return {
+    people,
+    emails: Array.from(emails),
+    links: Array.from(links),
+    images: Array.from(images)
+  };
+}
+
+async function crawlSite(startUrl, opts = {}) {
+  const { maxPages = 10, maxDepth = 2 } = opts;
+  const origin = toOrigin(startUrl);
+  const queue = [{ url: startUrl, depth: 0 }];
+  const visited = new Set();
+  const aggregate = { people: [], emails: new Set(), links: new Set(), images: new Set() };
+
+  while (queue.length && visited.size < maxPages) {
+    const { url, depth } = queue.shift();
+    if (visited.has(url) || depth > maxDepth) continue;
+    visited.add(url);
+
+    try {
+      const html = await fetchHtml(url);
+      const { $, text } = extractTextFromHtml(html);
+      const ent = extractEntities($, url);
+      ent.people.forEach(p => aggregate.people.push(p));
+      ent.emails.forEach(e => aggregate.emails.add(e));
+      ent.links.forEach(l => aggregate.links.add(l));
+      ent.images.forEach(i => aggregate.images.add(i));
+
+      // Enqueue same-origin links that look like pages we care about
+      $('a[href]').each((_, a) => {
+        const next = normalizeUrl(url, $(a).attr('href'));
+        if (!next || !sameOrigin(startUrl, next)) return;
+        if (/[#?]$/.test(next)) return;
+        if (/\.(pdf|jpg|jpeg|png|gif|svg|zip|rar|7z|mp4|mp3|avi)$/i.test(next)) return;
+        if (/\b(career|blog|terms|privacy)\b/i.test(next)) return;
+        if (!visited.has(next)) queue.push({ url: next, depth: depth + 1 });
+      });
+    } catch (e) {
+      // ignore page errors
+    }
+  }
+
+  // Deduplicate people by name
+  const uniquePeople = [];
+  for (const p of aggregate.people) {
+    if (!uniquePeople.some(q => q.name.toLowerCase() === p.name.toLowerCase())) uniquePeople.push(p);
+  }
+
+  const knowledge = {
+    people: uniquePeople,
+    emails: Array.from(aggregate.emails),
+    links: Array.from(aggregate.links),
+    images: Array.from(aggregate.images),
+    crawledAt: Date.now(),
+    origin
+  };
+  knowledgeCache.set(origin, knowledge);
+  return knowledge;
+}
+
+function getCachedKnowledge(url) {
+  const origin = toOrigin(url);
+  const k = knowledgeCache.get(origin);
+  if (k && Date.now() - k.crawledAt < KNOW_TTL_MS) return k;
+  return null;
+}
+
+app.get('/api/crawl', async (req, res) => {
   const url = req.query.url;
+  const maxPages = Math.min(parseInt(req.query.maxPages || '10', 10) || 10, 30);
+  const maxDepth = Math.min(parseInt(req.query.maxDepth || '2', 10) || 2, 5);
   if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
-  const info = await getSiteSummary(url);
-  if (!info) return res.status(502).json({ error: 'Failed to fetch or summarize' });
-  res.json(info);
+  try {
+    const knowledge = await crawlSite(url, { maxPages, maxDepth });
+    res.json(knowledge);
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Failed to crawl' });
+  }
 });
+
+function likelyInfoQuery(text) {
+  const t = (text || '').toLowerCase();
+  return /(ceo|founder|lead(er|ership)|team|contact|email|linkedin|profile|head|director)/i.test(t);
+}
 
 app.post('/api/message', async (req, res) => {
   const { sessionId, message, user, context } = req.body || {};
@@ -200,16 +378,31 @@ app.post('/api/message', async (req, res) => {
 
   let reply = '';
   try {
-    let messages = buildMessages(context, history);
-
-    // If a site URL was provided, fetch and include the summary as extra system context
+    let siteFactsJson = '';
     const siteUrl = context?.siteUrl || context?.url;
-    if (siteUrl && /^https?:\/\//i.test(siteUrl)) {
-      const site = await getSiteSummary(siteUrl);
-      if (site?.summary) {
-        messages.unshift({ role: 'system', content: `Website context from ${siteUrl} (title: ${site.title || 'n/a'}):\n${site.summary}` });
-      }
+    if (siteUrl && /^https?:\/\//i.test(siteUrl) && likelyInfoQuery(message)) {
+      const cached = getCachedKnowledge(siteUrl);
+      const knowledge = cached || (await crawlSite(siteUrl, { maxPages: 12, maxDepth: 2 }));
+      siteFactsJson = JSON.stringify({
+        topPeople: knowledge.people.slice(0, 8),
+        emails: knowledge.emails.slice(0, 20),
+        social: knowledge.links.filter(l => /linkedin\.com\//i.test(l)).slice(0, 20),
+        images: knowledge.images.slice(0, 20)
+      });
     }
+
+    const ctx = Object.assign({}, context || {}, siteFactsJson ? { siteFactsJson } : {});
+    let messages = buildMessages(ctx, history);
+
+    // Include summarized website context too if provided
+    const maybeSummary = await (async () => {
+      if (ctx.siteUrl && /^https?:\/\//i.test(ctx.siteUrl)) {
+        const site = await getSiteSummary(ctx.siteUrl);
+        return site?.summary ? `Website context from ${ctx.siteUrl} (title: ${site.title || 'n/a'}):\n${site.summary}` : '';
+      }
+      return '';
+    })();
+    if (maybeSummary) messages.unshift({ role: 'system', content: maybeSummary });
 
     if (openaiClient) {
       reply = await replyWithOpenAI(messages);

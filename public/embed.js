@@ -30,6 +30,8 @@
     .msg { max-width: 80%; padding: 10px 12px; border-radius: 12px; margin: 6px 0; font: 400 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; white-space: pre-wrap; word-break: break-word; }
     .msg.user { background: #e8f0ff; color: #102a63; margin-left: auto; }
     .msg.assistant { background: #ffffff; color: #222; border: 1px solid #eceff3; }
+    .msg.assistant img { max-width: 100%; border-radius: 8px; display: block; margin: 6px 0; }
+    .msg.assistant a { color: ${primary}; text-decoration: underline; }
     form { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #eceff3; }
     input[type="text"] { border: 1px solid #d7dce3; border-radius: 10px; padding: 10px 12px; font: 400 14px/1 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; outline: none; }
     input[type="text"]:focus { border-color: ${primary}; box-shadow: 0 0 0 3px color-mix(in oklab, ${primary} 20%, transparent); }
@@ -61,10 +63,25 @@
   const input = $('input');
   const closeBtn = $('close');
 
+  function renderMarkdown(text) {
+    if (!text) return '';
+    // Safe minimal markdown: images ![alt](url), links [text](url)
+    let html = text
+      .replace(/!\[[^\]]*\]\((https?:[^\s)]+)\)/g, '<img src="$1" alt="" />')
+      .replace(/\[([^\]]+)\]\((https?:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1<\/a>');
+    // Convert bare URLs into links
+    html = html.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1<\/a>');
+    return html;
+  }
+
   function addMsg(role, content) {
     const div = document.createElement('div');
     div.className = 'msg ' + role;
-    div.textContent = content;
+    if (role === 'assistant') {
+      div.innerHTML = renderMarkdown(content);
+    } else {
+      div.textContent = content;
+    }
     messages.appendChild(div);
     messages.scrollTop = messages.scrollHeight;
   }
@@ -105,7 +122,7 @@
       }
       const last = messages.lastElementChild;
       if (last && last.classList.contains('assistant')) {
-        last.textContent = data.reply || 'Okay.';
+        last.innerHTML = renderMarkdown(data.reply || 'Okay.');
       }
     } catch (err) {
       const last = messages.lastElementChild;
