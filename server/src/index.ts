@@ -10,7 +10,7 @@ import PQueue from 'p-queue';
 import { fetch } from 'undici';
 import { OpenAIEmbeddings, ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import { getClient, ensureSchema } from './db.js';
+import { getClient, ensureSchema, ensureGlobal } from './db.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
@@ -99,40 +99,26 @@ function titleFromUrl(url: string): string {
   return pathname.split('/').filter(Boolean).slice(-1)[0] || '/';
 }
 
-app.post('/api/crawl', async (req: Request, res: Response) => {
+function sha1(input: string): string {
+  return crypto.createHash('sha1').update(input).digest('hex');
+}
+
+app.post('/api/register', async (req: Request, res: Response) => {
   try {
-    const { url, maxPages, sameOriginOnly } = crawlInputSchema.parse(req.body);
-    const origin = new URL(url).origin;
-    const visited = new Set<string>();
-    const queue = new PQueue({ concurrency: 4, interval: 1000, intervalCap: 8 });
-
-    const pages: Array<{ url: string; text: string; images: string[] }> = [];
-
-    async function visit(target: string) {
-      if (visited.size >= maxPages) return;
-      if (visited.has(target)) return;
-      if (sameOriginOnly && !target.startsWith(origin)) return;
-      visited.add(target);
-      try {
-        const html = await fetchHtml(target);
-        const { text, links, images } = await extractLinksAndText(target, html);
-        if (text.length > 50) pages.push({ url: target, text, images });
-        for (const link of links) {
-          if (visited.size + queue.size >= maxPages) break;
-          if (!visited.has(link)) queue.add(() => visit(link));
-        }
-      } catch (e) {
-        // ignore fetch errors
-      }
-      await delay(50);
-    }
-
-    await visit(normalizeUrl(url));
-    await queue.onIdle();
-
-    res.json({ pagesCount: pages.length, pages });
+    const { url, refreshMinutes } = req.body as { url: string; refreshMinutes?: number };
+    if (!url) return res.status(400).json({ error: 'Missing url' });
+    const domain = new URL(url).hostname;
+    const client = await getClient();
+    await ensureGlobal(client);
+    await client.query(
+      `INSERT INTO sites (domain, base_url, refresh_minutes, last_crawled_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (domain) DO UPDATE SET base_url = EXCLUDED.base_url, refresh_minutes = COALESCE($3, sites.refresh_minutes), last_crawled_at = now()`,
+      [domain, url, refreshMinutes ?? 60]
+    );
+    res.json({ ok: true });
   } catch (e: any) {
-    res.status(400).json({ error: e.message });
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -149,19 +135,41 @@ app.post('/api/ingest', async (req: Request, res: Response) => {
     const hasOpenAI = Boolean(OPENAI_API_KEY);
     const embeddings = hasOpenAI ? await embedTexts(contents) : pages.map(() => null as number[] | null);
 
+    const seenIds = new Set<string>();
+
     for (let i = 0; i < pages.length; i++) {
       const p = pages[i];
-      const id = crypto.createHash('sha1').update(p.url).digest('hex');
+      const id = sha1(p.url);
+      seenIds.add(id);
       const title = titleFromUrl(p.url);
       const content = contents[i];
       const images = p.images ?? [];
+      const contentHash = sha1(content);
       const embedding = embeddings[i];
       const embeddingParam = embedding ? pgvector.toSql(embedding) : null;
       await client.query(
-        `INSERT INTO ${tableName} (id, url, title, content, images, embedding)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, images = EXCLUDED.images, embedding = EXCLUDED.embedding`,
-        [id, p.url, title, content, JSON.stringify(images), embeddingParam]
+        `INSERT INTO ${tableName} (id, url, title, content, images, content_hash, last_seen_at, deleted_at, embedding)
+         VALUES ($1, $2, $3, $4, $5, $6, now(), NULL, $7)
+         ON CONFLICT (id) DO UPDATE SET
+           url = EXCLUDED.url,
+           title = EXCLUDED.title,
+           content = EXCLUDED.content,
+           images = EXCLUDED.images,
+           content_hash = EXCLUDED.content_hash,
+           last_seen_at = now(),
+           deleted_at = NULL,
+           embedding = EXCLUDED.embedding`,
+        [id, p.url, title, content, JSON.stringify(images), contentHash, embeddingParam]
+      );
+    }
+
+    // Soft-delete pages not seen in this crawl
+    const idsArray = Array.from(seenIds);
+    if (idsArray.length > 0) {
+      await client.query(
+        `UPDATE ${tableName} SET deleted_at = now()
+         WHERE deleted_at IS NULL AND id NOT IN (${idsArray.map((_, i) => `$${i + 1}`).join(',')})`,
+        idsArray
       );
     }
 
@@ -186,17 +194,17 @@ app.post('/api/query', async (req: Request, res: Response) => {
       const r = await client.query(
         `SELECT id, url, title, content, images
          FROM ${tableName}
-         WHERE embedding IS NOT NULL
+         WHERE deleted_at IS NULL AND embedding IS NOT NULL
          ORDER BY embedding <=> $1
          LIMIT $2`,
         [pgvector.toSql(queryEmbedding as unknown as number[]), k]
       );
       rows = r.rows;
     } catch (err) {
-      // Fallback without vectors
       const r = await client.query(
         `SELECT id, url, title, content, images
          FROM ${tableName}
+         WHERE deleted_at IS NULL
          ORDER BY (CASE WHEN content ILIKE '%' || $1 || '%' THEN 0 ELSE 1 END), length(content)
          LIMIT $2`,
         [question, k]
@@ -221,6 +229,27 @@ app.post('/api/query', async (req: Request, res: Response) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// periodic refresher (every 10 minutes)
+setInterval(async () => {
+  try {
+    const client = await getClient();
+    await ensureGlobal(client);
+    const { rows } = await client.query(`SELECT domain, base_url, refresh_minutes, COALESCE(last_crawled_at, to_timestamp(0)) as last_crawled_at FROM sites`);
+    for (const s of rows) {
+      const ageMinutes = (Date.now() - new Date(s.last_crawled_at).getTime()) / 60000;
+      if (ageMinutes >= s.refresh_minutes) {
+        // trigger a lightweight crawl directly
+        try {
+          const crawlRes = await fetch('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.base_url, maxPages: 50, sameOriginOnly: true }) } as any);
+          const crawlJson = (await crawlRes.json()) as { pages?: Array<{ url: string; text: string; images?: string[] }> };
+          await fetch('http://localhost:' + PORT + '/api/ingest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.base_url, pages: crawlJson.pages || [] }) } as any);
+          await client.query('UPDATE sites SET last_crawled_at = now() WHERE domain = $1', [s.domain]);
+        } catch {}
+      }
+    }
+  } catch {}
+}, 10 * 60 * 1000);
 
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);

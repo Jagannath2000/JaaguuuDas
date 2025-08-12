@@ -13,8 +13,19 @@ export async function getClient() {
     pgvector.registerType(client);
     return client;
 }
-export async function ensureSchema(client, table, dim) {
+export async function ensureGlobal(client) {
     await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+    await client.query(`
+    CREATE TABLE IF NOT EXISTS sites (
+      domain text PRIMARY KEY,
+      base_url text NOT NULL,
+      refresh_minutes int NOT NULL DEFAULT 60,
+      last_crawled_at timestamptz
+    )
+  `);
+}
+export async function ensureSchema(client, table, dim) {
+    await ensureGlobal(client);
     await client.query(`
     CREATE TABLE IF NOT EXISTS ${table} (
       id text PRIMARY KEY,
@@ -22,10 +33,13 @@ export async function ensureSchema(client, table, dim) {
       title text,
       content text,
       images jsonb,
+      content_hash text,
+      last_seen_at timestamptz DEFAULT now(),
+      deleted_at timestamptz,
       embedding vector(${dim})
     )
   `);
-    // Backward-compat: if an old column 'image' exists, add 'images'
+    // Add columns if missing
     await client.query(`
     DO $$
     BEGIN
@@ -35,7 +49,28 @@ export async function ensureSchema(client, table, dim) {
       ) THEN
         ALTER TABLE ${table} ADD COLUMN images jsonb;
       END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'content_hash'
+      ) THEN
+        ALTER TABLE ${table} ADD COLUMN content_hash text;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'last_seen_at'
+      ) THEN
+        ALTER TABLE ${table} ADD COLUMN last_seen_at timestamptz DEFAULT now();
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'deleted_at'
+      ) THEN
+        ALTER TABLE ${table} ADD COLUMN deleted_at timestamptz;
+      END IF;
     END$$;
+  `);
+    await client.query(`
+    CREATE INDEX IF NOT EXISTS ${table}_url_idx ON ${table}(url);
   `);
     await client.query(`
     CREATE INDEX IF NOT EXISTS ${table}_embedding_idx ON ${table} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
