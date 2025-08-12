@@ -103,6 +103,20 @@ function sha1(input: string): string {
   return crypto.createHash('sha1').update(input).digest('hex');
 }
 
+async function fetchJsonSafe<T>(url: string, init?: any): Promise<T> {
+  const res = await fetch(url, init as any);
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Request failed ${res.status} ${res.statusText}: ${txt.slice(0, 200)}`);
+  }
+  if (!ct.includes('application/json')) {
+    const txt = await res.text();
+    throw new Error(`Expected JSON but got content-type '${ct}'. Body: ${txt.slice(0, 200)}`);
+  }
+  return (await res.json()) as T;
+}
+
 app.post('/api/register', async (req: Request, res: Response) => {
   try {
     const { url, refreshMinutes } = req.body as { url: string; refreshMinutes?: number };
@@ -239,10 +253,11 @@ setInterval(async () => {
     for (const s of rows) {
       const ageMinutes = (Date.now() - new Date(s.last_crawled_at).getTime()) / 60000;
       if (ageMinutes >= s.refresh_minutes) {
-        // trigger a lightweight crawl directly
         try {
-          const crawlRes = await fetch('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.base_url, maxPages: 50, sameOriginOnly: true }) } as any);
-          const crawlJson = (await crawlRes.json()) as { pages?: Array<{ url: string; text: string; images?: string[] }> };
+          const crawlJson = await fetchJsonSafe<{ pages?: Array<{ url: string; text: string; images?: string[] }> }>(
+            'http://localhost:' + PORT + '/api/crawl',
+            { method: 'POST', headers: { 'content-type': 'application/json', 'accept': 'application/json' }, body: JSON.stringify({ url: s.base_url, maxPages: 50, sameOriginOnly: true }) }
+          );
           await fetch('http://localhost:' + PORT + '/api/ingest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.base_url, pages: crawlJson.pages || [] }) } as any);
           await client.query('UPDATE sites SET last_crawled_at = now() WHERE domain = $1', [s.domain]);
         } catch {}
@@ -264,8 +279,10 @@ app.get('/', (_req, res) => res.type('text/plain').send('RAGTech API is running.
     if (process.env.AUTO_INDEX_ON_START === 'true' && process.env.DEFAULT_SITE_URL) {
       const site = process.env.DEFAULT_SITE_URL;
       console.log('Auto-indexing site:', site);
-      const crawlRes = await fetch('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site, maxPages: 50, sameOriginOnly: true }) } as any);
-      const crawlJson = (await crawlRes.json()) as { pages?: Array<{ url: string; text: string; images?: string[] }> };
+      const crawlJson = await fetchJsonSafe<{ pages?: Array<{ url: string; text: string; images?: string[] }> }>(
+        'http://localhost:' + PORT + '/api/crawl',
+        { method: 'POST', headers: { 'content-type': 'application/json', 'accept': 'application/json' }, body: JSON.stringify({ url: site, maxPages: 50, sameOriginOnly: true }) }
+      );
       await fetch('http://localhost:' + PORT + '/api/ingest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site, pages: crawlJson.pages || [] }) } as any);
       console.log('Indexing complete for', site);
     }

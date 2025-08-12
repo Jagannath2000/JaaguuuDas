@@ -100,6 +100,19 @@ function titleFromUrl(url) {
 function sha1(input) {
     return crypto.createHash('sha1').update(input).digest('hex');
 }
+async function fetchJsonSafe(url, init) {
+    const res = await fetch(url, init);
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Request failed ${res.status} ${res.statusText}: ${txt.slice(0, 200)}`);
+    }
+    if (!ct.includes('application/json')) {
+        const txt = await res.text();
+        throw new Error(`Expected JSON but got content-type '${ct}'. Body: ${txt.slice(0, 200)}`);
+    }
+    return (await res.json());
+}
 app.post('/api/register', async (req, res) => {
     try {
         const { url, refreshMinutes } = req.body;
@@ -211,10 +224,8 @@ setInterval(async () => {
         for (const s of rows) {
             const ageMinutes = (Date.now() - new Date(s.last_crawled_at).getTime()) / 60000;
             if (ageMinutes >= s.refresh_minutes) {
-                // trigger a lightweight crawl directly
                 try {
-                    const crawlRes = await fetch('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.base_url, maxPages: 50, sameOriginOnly: true }) });
-                    const crawlJson = (await crawlRes.json());
+                    const crawlJson = await fetchJsonSafe('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json', 'accept': 'application/json' }, body: JSON.stringify({ url: s.base_url, maxPages: 50, sameOriginOnly: true }) });
                     await fetch('http://localhost:' + PORT + '/api/ingest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: s.base_url, pages: crawlJson.pages || [] }) });
                     await client.query('UPDATE sites SET last_crawled_at = now() WHERE domain = $1', [s.domain]);
                 }
@@ -236,8 +247,7 @@ app.get('/', (_req, res) => res.type('text/plain').send('RAGTech API is running.
         if (process.env.AUTO_INDEX_ON_START === 'true' && process.env.DEFAULT_SITE_URL) {
             const site = process.env.DEFAULT_SITE_URL;
             console.log('Auto-indexing site:', site);
-            const crawlRes = await fetch('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site, maxPages: 50, sameOriginOnly: true }) });
-            const crawlJson = (await crawlRes.json());
+            const crawlJson = await fetchJsonSafe('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json', 'accept': 'application/json' }, body: JSON.stringify({ url: site, maxPages: 50, sameOriginOnly: true }) });
             await fetch('http://localhost:' + PORT + '/api/ingest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site, pages: crawlJson.pages || [] }) });
             console.log('Indexing complete for', site);
         }
