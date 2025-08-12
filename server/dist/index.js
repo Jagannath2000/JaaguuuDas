@@ -4,16 +4,18 @@ import cors from 'cors';
 import { z } from 'zod';
 import pgvector from 'pgvector/pg';
 import { parse } from 'node-html-parser';
+import { setTimeout as delay } from 'timers/promises';
 import crypto from 'crypto';
+import PQueue from 'p-queue';
 import { fetch } from 'undici';
-import { OpenAIEmbeddings, ChatOpenAI } from '@langchain/openai';
+import { GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
 import { getClient, ensureSchema, ensureGlobal } from './db.js';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const VECTOR_DIM = Number(process.env.VECTOR_DIM || 1536);
-if (!OPENAI_API_KEY) {
-    console.warn('OPENAI_API_KEY not set. Set it in .env to enable embeddings and answers.');
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY || '';
+const VECTOR_DIM = Number(process.env.VECTOR_DIM || 768);
+if (!GOOGLE_API_KEY) {
+    console.warn('GOOGLE_API_KEY not set. Set it in .env to enable embeddings and answers.');
 }
 const app = express();
 app.use(cors({ origin: ['http://localhost:5173'], credentials: true }));
@@ -90,7 +92,7 @@ async function extractLinksAndText(baseUrl, html) {
     return { text, links: Array.from(links), images: Array.from(images).slice(0, 8) };
 }
 async function embedTexts(texts) {
-    const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
+    const embedder = new GoogleGenerativeAIEmbeddings({ apiKey: GOOGLE_API_KEY, model: 'text-embedding-004' });
     return await embedder.embedDocuments(texts);
 }
 function titleFromUrl(url) {
@@ -140,8 +142,8 @@ app.post('/api/ingest', async (req, res) => {
         const client = await getClient();
         await ensureSchema(client, tableName, VECTOR_DIM);
         const contents = pages.map(p => p.text.slice(0, 4000));
-        const hasOpenAI = Boolean(OPENAI_API_KEY);
-        const embeddings = hasOpenAI ? await embedTexts(contents) : pages.map(() => null);
+        const hasEmbeddings = Boolean(GOOGLE_API_KEY);
+        const embeddings = hasEmbeddings ? await embedTexts(contents) : pages.map(() => null);
         const seenIds = new Set();
         for (let i = 0; i < pages.length; i++) {
             const p = pages[i];
@@ -178,6 +180,44 @@ app.post('/api/ingest', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+app.post('/api/crawl', async (req, res) => {
+    try {
+        const { url, maxPages, sameOriginOnly } = crawlInputSchema.parse(req.body);
+        const origin = new URL(url).origin;
+        const visited = new Set();
+        const queue = new PQueue({ concurrency: 4, interval: 1000, intervalCap: 8 });
+        const pages = [];
+        async function visit(target) {
+            if (visited.size >= maxPages)
+                return;
+            if (visited.has(target))
+                return;
+            if (sameOriginOnly && !target.startsWith(origin))
+                return;
+            visited.add(target);
+            try {
+                const html = await fetchHtml(target);
+                const { text, links, images } = await extractLinksAndText(target, html);
+                if (text.length > 50)
+                    pages.push({ url: target, text, images });
+                for (const link of links) {
+                    if (visited.size + queue.size >= maxPages)
+                        break;
+                    if (!visited.has(link))
+                        queue.add(() => visit(link));
+                }
+            }
+            catch { }
+            await delay(50);
+        }
+        await visit(normalizeUrl(url));
+        await queue.onIdle();
+        res.json({ pagesCount: pages.length, pages });
+    }
+    catch (e) {
+        res.status(400).json({ error: e.message });
+    }
+});
 app.post('/api/query', async (req, res) => {
     try {
         const { url, question, k } = querySchema.parse(req.body);
@@ -186,7 +226,7 @@ app.post('/api/query', async (req, res) => {
         const client = await getClient();
         let rows = [];
         try {
-            const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
+            const embedder = new GoogleGenerativeAIEmbeddings({ apiKey: GOOGLE_API_KEY, model: 'text-embedding-004' });
             const queryEmbedding = await embedder.embedQuery(question);
             const r = await client.query(`SELECT id, url, title, content, images
          FROM ${tableName}
@@ -206,8 +246,8 @@ app.post('/api/query', async (req, res) => {
         const context = rows.map((r, idx) => `Snippet ${idx + 1} (url: ${r.url}):\n${r.content}`).join('\n\n');
         const system = new SystemMessage('You are a helpful website RAG assistant. Answer strictly based on the provided context. If unsure, say you are not sure. When relevant, include the page URL and choose one representative image URL to show.');
         const human = new HumanMessage(`Question: ${question}\n\nContext:\n${context}`);
-        const llm = new ChatOpenAI({ temperature: 0.2, model: 'gpt-4o-mini', apiKey: OPENAI_API_KEY });
-        const answer = OPENAI_API_KEY ? (await llm.call([system, human])).content : 'Set OPENAI_API_KEY to enable answers.';
+        const llm = new ChatGoogleGenerativeAI({ temperature: 0.2, model: 'gemini-1.5-flash', apiKey: GOOGLE_API_KEY });
+        const answer = GOOGLE_API_KEY ? (await llm.call([system, human])).content : 'Set GOOGLE_API_KEY to enable answers.';
         const related = rows.map((r) => ({ title: r.title, url: r.url, images: Array.isArray(r.images) ? r.images : (r.images ? JSON.parse(r.images) : []) })).slice(0, 6);
         res.json({ answer, related });
     }
