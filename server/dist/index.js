@@ -18,7 +18,7 @@ if (!OPENAI_API_KEY) {
     console.warn('OPENAI_API_KEY not set. Set it in .env to enable embeddings and answers.');
 }
 const app = express();
-app.use(cors());
+app.use(cors({ origin: ['http://localhost:5173'], credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 const crawlInputSchema = z.object({
     url: z.string().url(),
@@ -65,12 +65,25 @@ async function extractLinksAndText(baseUrl, html) {
         }
         catch { }
     });
-    // Try to capture main image for the page (og:image)
-    let image = null;
+    // Collect image URLs (og:image and <img>)
+    const images = new Set();
     const og = $('meta[property="og:image"]').attr('content');
-    if (og)
-        image = new URL(og, baseUrl).toString();
-    return { text, links: Array.from(links), image };
+    if (og) {
+        try {
+            images.add(new URL(og, baseUrl).toString());
+        }
+        catch { }
+    }
+    $('img[src]').each((_, el) => {
+        const src = $(el).attr('src');
+        if (!src)
+            return;
+        try {
+            images.add(new URL(src, baseUrl).toString());
+        }
+        catch { }
+    });
+    return { text, links: Array.from(links), images: Array.from(images).slice(0, 8) };
 }
 // LanceDB removed; we will maintain one table per site (domain) in Postgres
 async function embedTexts(texts) {
@@ -98,9 +111,9 @@ app.post('/api/crawl', async (req, res) => {
             visited.add(target);
             try {
                 const html = await fetchHtml(target);
-                const { text, links, image } = await extractLinksAndText(target, html);
+                const { text, links, images } = await extractLinksAndText(target, html);
                 if (text.length > 50)
-                    pages.push({ url: target, text, image });
+                    pages.push({ url: target, text, images });
                 for (const link of links) {
                     if (visited.size + queue.size >= maxPages)
                         break;
@@ -137,11 +150,11 @@ app.post('/api/ingest', async (req, res) => {
             const id = crypto.createHash('sha1').update(p.url).digest('hex');
             const title = titleFromUrl(p.url);
             const content = contents[i];
-            const image = p.image || '';
+            const images = p.images ?? [];
             const embedding = embeddings[i];
-            await client.query(`INSERT INTO ${tableName} (id, url, title, content, image, embedding)
+            await client.query(`INSERT INTO ${tableName} (id, url, title, content, images, embedding)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, image = EXCLUDED.image, embedding = EXCLUDED.embedding`, [id, p.url, title, content, image, pgvector.toSql(embedding)]);
+         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, images = EXCLUDED.images, embedding = EXCLUDED.embedding`, [id, p.url, title, content, JSON.stringify(images), pgvector.toSql(embedding)]);
         }
         res.json({ ok: true, count: pages.length });
     }
@@ -157,8 +170,7 @@ app.post('/api/query', async (req, res) => {
         const client = await getClient();
         const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
         const queryEmbedding = await embedder.embedQuery(question);
-        // Vector search using cosine distance
-        const { rows } = await client.query(`SELECT id, url, title, content, image
+        const { rows } = await client.query(`SELECT id, url, title, content, images
        FROM ${tableName}
        ORDER BY embedding <=> $1
        LIMIT $2`, [pgvector.toSql(queryEmbedding), k]);
@@ -167,7 +179,7 @@ app.post('/api/query', async (req, res) => {
         const human = new HumanMessage(`Question: ${question}\n\nContext:\n${context}`);
         const llm = new ChatOpenAI({ temperature: 0.2, model: 'gpt-4o-mini', apiKey: OPENAI_API_KEY });
         const answer = OPENAI_API_KEY ? (await llm.call([system, human])).content : 'Set OPENAI_API_KEY to enable answers.';
-        const related = rows.map((r) => ({ title: r.title, url: r.url, image: r.image })).slice(0, 6);
+        const related = rows.map((r) => ({ title: r.title, url: r.url, images: Array.isArray(r.images) ? r.images : (r.images ? JSON.parse(r.images) : []) })).slice(0, 6);
         res.json({ answer, related });
     }
     catch (e) {

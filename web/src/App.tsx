@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import axios from 'axios';
+axios.defaults.baseURL = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
 
-interface PageItem { url: string; text: string; image?: string | null }
-interface RelatedItem { title: string; url: string; image?: string }
+interface PageItem { url: string; text: string; images?: string[] }
+interface RelatedItem { title: string; url: string; images?: string[] }
 
 function SubscribeModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [email, setEmail] = useState('');
@@ -123,18 +124,21 @@ export default function App() {
           <div className="mt-6">
             <h3 className="mb-3 text-lg font-semibold">Related content</h3>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3">
-              {related.map((r, i) => (
-                <a key={i} href={r.url} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-xl border bg-white shadow-sm transition hover:shadow-md">
-                  {r.image ? (
-                    <img src={r.image} alt={r.title} className="h-40 w-full object-cover" />
-                  ) : (
-                    <div className="flex h-40 w-full items-center justify-center bg-gray-100 text-gray-500">No image</div>
-                  )}
-                  <div className="p-3">
-                    <div className="truncate font-medium group-hover:text-purple-700">{r.title || r.url}</div>
-                  </div>
-                </a>
-              ))}
+              {related.map((r, i) => {
+                const img = r.images && r.images.length > 0 ? r.images[0] : undefined;
+                return (
+                  <a key={i} href={r.url} target="_blank" rel="noreferrer" className="group overflow-hidden rounded-xl border bg-white shadow-sm transition hover:shadow-md">
+                    {img ? (
+                      <img src={img} alt={r.title} className="h-40 w-full object-cover" />
+                    ) : (
+                      <div className="flex h-40 w-full items-center justify-center bg-gray-100 text-gray-500">No image</div>
+                    )}
+                    <div className="p-3">
+                      <div className="truncate font-medium group-hover:text-purple-700">{r.title || r.url}</div>
+                    </div>
+                  </a>
+                );
+              })}
             </div>
           </div>
         )}

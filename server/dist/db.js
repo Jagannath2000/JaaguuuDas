@@ -21,9 +21,21 @@ export async function ensureSchema(client, table, dim) {
       url text NOT NULL,
       title text,
       content text,
-      image text,
+      images jsonb,
       embedding vector(${dim})
     )
+  `);
+    // Backward-compat: if an old column 'image' exists, add 'images'
+    await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = '${table}' AND column_name = 'images'
+      ) THEN
+        ALTER TABLE ${table} ADD COLUMN images jsonb;
+      END IF;
+    END$$;
   `);
     await client.query(`
     CREATE INDEX IF NOT EXISTS ${table}_embedding_idx ON ${table} USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
