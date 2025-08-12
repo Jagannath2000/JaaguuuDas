@@ -149,7 +149,8 @@ app.post('/api/ingest', async (req, res) => {
         const client = await getClient();
         await ensureSchema(client, tableName, VECTOR_DIM);
         const contents = pages.map(p => p.text.slice(0, 4000));
-        const embeddings = OPENAI_API_KEY ? await embedTexts(contents) : pages.map(() => []);
+        const hasOpenAI = Boolean(OPENAI_API_KEY);
+        const embeddings = hasOpenAI ? await embedTexts(contents) : pages.map(() => null);
         for (let i = 0; i < pages.length; i++) {
             const p = pages[i];
             const id = crypto.createHash('sha1').update(p.url).digest('hex');
@@ -157,13 +158,15 @@ app.post('/api/ingest', async (req, res) => {
             const content = contents[i];
             const images = p.images ?? [];
             const embedding = embeddings[i];
+            const embeddingParam = embedding ? pgvector.toSql(embedding) : null;
             await client.query(`INSERT INTO ${tableName} (id, url, title, content, images, embedding)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, images = EXCLUDED.images, embedding = EXCLUDED.embedding`, [id, p.url, title, content, JSON.stringify(images), pgvector.toSql(embedding)]);
+         ON CONFLICT (id) DO UPDATE SET url = EXCLUDED.url, title = EXCLUDED.title, content = EXCLUDED.content, images = EXCLUDED.images, embedding = EXCLUDED.embedding`, [id, p.url, title, content, JSON.stringify(images), embeddingParam]);
         }
         res.json({ ok: true, count: pages.length });
     }
     catch (e) {
+        console.error('Ingest error:', e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -173,12 +176,25 @@ app.post('/api/query', async (req, res) => {
         const domain = new URL(url).hostname;
         const tableName = domain.replace(/[^a-zA-Z0-9_]/g, '_');
         const client = await getClient();
-        const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
-        const queryEmbedding = await embedder.embedQuery(question);
-        const { rows } = await client.query(`SELECT id, url, title, content, images
-       FROM ${tableName}
-       ORDER BY embedding <=> $1
-       LIMIT $2`, [pgvector.toSql(queryEmbedding), k]);
+        let rows = [];
+        try {
+            const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
+            const queryEmbedding = await embedder.embedQuery(question);
+            const r = await client.query(`SELECT id, url, title, content, images
+         FROM ${tableName}
+         WHERE embedding IS NOT NULL
+         ORDER BY embedding <=> $1
+         LIMIT $2`, [pgvector.toSql(queryEmbedding), k]);
+            rows = r.rows;
+        }
+        catch (err) {
+            // Fallback without vectors
+            const r = await client.query(`SELECT id, url, title, content, images
+         FROM ${tableName}
+         ORDER BY (CASE WHEN content ILIKE '%' || $1 || '%' THEN 0 ELSE 1 END), length(content)
+         LIMIT $2`, [question, k]);
+            rows = r.rows;
+        }
         const context = rows.map((r, idx) => `Snippet ${idx + 1} (url: ${r.url}):\n${r.content}`).join('\n\n');
         const system = new SystemMessage('You are a helpful website RAG assistant. Answer strictly based on the provided context. If unsure, say you are not sure. When relevant, include the page URL and choose one representative image URL to show.');
         const human = new HumanMessage(`Question: ${question}\n\nContext:\n${context}`);
