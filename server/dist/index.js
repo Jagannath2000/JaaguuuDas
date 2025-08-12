@@ -3,14 +3,14 @@ import express from 'express';
 import cors from 'cors';
 import { z } from 'zod';
 import pgvector from 'pgvector/pg';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio';
 import { setTimeout as delay } from 'timers/promises';
 import crypto from 'crypto';
 import PQueue from 'p-queue';
 import { fetch } from 'undici';
 import { OpenAIEmbeddings, ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import { getClient, ensureSchema } from './db';
+import { getClient, ensureSchema } from './db.js';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const VECTOR_DIM = Number(process.env.VECTOR_DIM || 1536);
@@ -85,7 +85,6 @@ async function extractLinksAndText(baseUrl, html) {
     });
     return { text, links: Array.from(links), images: Array.from(images).slice(0, 8) };
 }
-// LanceDB removed; we will maintain one table per site (domain) in Postgres
 async function embedTexts(texts) {
     const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
     return await embedder.embedDocuments(texts);

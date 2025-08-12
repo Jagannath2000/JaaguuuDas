@@ -3,14 +3,14 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import { z } from 'zod';
 import pgvector from 'pgvector/pg';
-import cheerio from 'cheerio';
+import * as cheerio from 'cheerio';
 import { setTimeout as delay } from 'timers/promises';
 import crypto from 'crypto';
 import PQueue from 'p-queue';
 import { fetch } from 'undici';
 import { OpenAIEmbeddings, ChatOpenAI } from '@langchain/openai';
 import { HumanMessage, SystemMessage } from '@langchain/core/messages';
-import { getClient, ensureSchema } from './db';
+import { getClient, ensureSchema } from './db.js';
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
@@ -61,7 +61,7 @@ async function extractLinksAndText(baseUrl: string, html: string) {
   $('script, style, noscript').remove();
   const text = $('body').text().replace(/\s+/g, ' ').trim();
   const links = new Set<string>();
-  $('a[href]').each((_, el) => {
+  $('a[href]').each((_: number, el: any) => {
     const href = $(el).attr('href');
     if (!href) return;
     try {
@@ -75,7 +75,7 @@ async function extractLinksAndText(baseUrl: string, html: string) {
   if (og) {
     try { images.add(new URL(og, baseUrl).toString()); } catch {}
   }
-  $('img[src]').each((_, el) => {
+  $('img[src]').each((_: number, el: any) => {
     const src = $(el).attr('src');
     if (!src) return;
     try { images.add(new URL(src, baseUrl).toString()); } catch {}
@@ -83,7 +83,6 @@ async function extractLinksAndText(baseUrl: string, html: string) {
   return { text, links: Array.from(links), images: Array.from(images).slice(0, 8) };
 }
 
-// LanceDB removed; we will maintain one table per site (domain) in Postgres
 async function embedTexts(texts: string[]): Promise<number[][]> {
   const embedder = new OpenAIEmbeddings({ apiKey: OPENAI_API_KEY });
   return await embedder.embedDocuments(texts);
