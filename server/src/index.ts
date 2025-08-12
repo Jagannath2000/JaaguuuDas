@@ -225,3 +225,6 @@ app.post('/api/query', async (req: Request, res: Response) => {
 app.listen(PORT, () => {
   console.log(`Server listening on http://localhost:${PORT}`);
 });
+// Health and root endpoints
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/', (_req, res) => res.type('text/plain').send('RAGTech API is running. Endpoints: POST /api/crawl, POST /api/ingest, POST /api/query, GET /api/health'));
