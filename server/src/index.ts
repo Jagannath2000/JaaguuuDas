@@ -257,3 +257,19 @@ app.listen(PORT, () => {
 // Health and root endpoints
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 app.get('/', (_req, res) => res.type('text/plain').send('RAGTech API is running. Endpoints: POST /api/crawl, POST /api/ingest, POST /api/query, GET /api/health'));
+
+// Auto-index a default site on start if configured
+(async () => {
+  try {
+    if (process.env.AUTO_INDEX_ON_START === 'true' && process.env.DEFAULT_SITE_URL) {
+      const site = process.env.DEFAULT_SITE_URL;
+      console.log('Auto-indexing site:', site);
+      const crawlRes = await fetch('http://localhost:' + PORT + '/api/crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site, maxPages: 50, sameOriginOnly: true }) } as any);
+      const crawlJson = (await crawlRes.json()) as { pages?: Array<{ url: string; text: string; images?: string[] }> };
+      await fetch('http://localhost:' + PORT + '/api/ingest', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: site, pages: crawlJson.pages || [] }) } as any);
+      console.log('Indexing complete for', site);
+    }
+  } catch (e) {
+    console.warn('Auto-index failed:', e);
+  }
+})();
