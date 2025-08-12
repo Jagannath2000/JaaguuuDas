@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import { z } from 'zod';
 import pgvector from 'pgvector/pg';
-import * as cheerio from 'cheerio';
+import { parse } from 'node-html-parser';
 import { setTimeout as delay } from 'timers/promises';
 import crypto from 'crypto';
 import PQueue from 'p-queue';
@@ -51,12 +51,13 @@ async function fetchHtml(targetUrl) {
     return await res.text();
 }
 async function extractLinksAndText(baseUrl, html) {
-    const $ = cheerio.load(html);
-    $('script, style, noscript').remove();
-    const text = $('body').text().replace(/\s+/g, ' ').trim();
+    const root = parse(html);
+    // remove noisy tags
+    root.querySelectorAll('script,style,noscript').forEach(n => n.remove());
+    const text = root.text.replace(/\s+/g, ' ').trim();
     const links = new Set();
-    $('a[href]').each((_, el) => {
-        const href = $(el).attr('href');
+    root.querySelectorAll('a').forEach(el => {
+        const href = el.getAttribute('href');
         if (!href)
             return;
         try {
@@ -67,15 +68,20 @@ async function extractLinksAndText(baseUrl, html) {
     });
     // Collect image URLs (og:image and <img>)
     const images = new Set();
-    const og = $('meta[property="og:image"]').attr('content');
-    if (og) {
-        try {
-            images.add(new URL(og, baseUrl).toString());
+    root.querySelectorAll('meta').forEach(m => {
+        const prop = m.getAttribute('property');
+        if (prop === 'og:image') {
+            const content = m.getAttribute('content');
+            if (content) {
+                try {
+                    images.add(new URL(content, baseUrl).toString());
+                }
+                catch { }
+            }
         }
-        catch { }
-    }
-    $('img[src]').each((_, el) => {
-        const src = $(el).attr('src');
+    });
+    root.querySelectorAll('img').forEach(img => {
+        const src = img.getAttribute('src');
         if (!src)
             return;
         try {
