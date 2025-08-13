@@ -1,0 +1,14 @@
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+/* Keep links pleasant */
+a {
+  text-decoration: none;
+}
