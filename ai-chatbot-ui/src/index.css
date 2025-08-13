@@ -1,0 +1,84 @@
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #0d1117;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: radial-gradient(1200px 600px at 10% -20%, rgba(56,139,253,0.08), rgba(13,17,23,0)) ,
+              radial-gradient(1200px 600px at 110% 20%, rgba(66,212,180,0.08), rgba(13,17,23,0)) ,
+              #0d1117;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff;
+  }
+  body {
+    background: radial-gradient(1200px 600px at 10% -20%, rgba(56,139,253,0.08), rgba(255,255,255,0)) ,
+                radial-gradient(1200px 600px at 110% 20%, rgba(66,212,180,0.08), rgba(255,255,255,0)) ,
+                #ffffff;
+  }
+}
+
+a { text-decoration: none; }
+
+/***** Utilities *****/
+.fade-in {
+  animation: fadeIn 320ms ease-out both;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+}
+
+.glass-light {
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+}
+
+/***** Chat Layout Helpers *****/
+.chat-wrapper {
+  padding-top: 64px;  /* navbar height */
+  padding-bottom: 98px; /* input bar height */
+}
+
+.message-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+.message-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 250ms ease, transform 250ms ease;
+}
+
+.message-bubble {
+  max-width: min(80%, 720px);
+}
